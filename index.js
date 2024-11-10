@@ -13,6 +13,7 @@ const cors = require("cors");
 // FFMPEG
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
+const ffprobe = require("ffprobe-static");
 
 // Init Express App
 const app = express();
@@ -26,80 +27,64 @@ const videoPath = "socola.mp4";
 const framesDir = path.join(__dirname, "thumbnails");
 
 ffmpeg.setFfmpegPath(ffmpegPath);
-
-app.get("/", async (req, res) => {
-  // Generate 5 random timestamps between 0 and 25 seconds
-  const timemarks = Array.from({ length: 5 }, () => {
-    const seconds = Math.floor(Math.random() * 26); // 0-25 inclusive
-    return `00:00:${seconds.toString().padStart(2, "0")}`;
-  });
-
-  ffmpeg(videoPath)
-    .on("end", () => {
-      console.log("Frame extracted successfully");
-    })
-    .on("error", (err) => {
-      console.error(err);
-    })
-    .seek()
-    .takeScreenshots({
-      folder: "thumbnails",
-      filename: "frame_%02d.jpg",
-      timemarks: timemarks,
-    });
-
-  return res.json({
-    status: 200,
-    body: "Hello World",
-  });
-});
+ffmpeg.setFfprobePath(ffprobe.path);
 
 // Generate Timeline Frames Endpoint
 app.get("/generate-frames", async (req, res) => {
   const frameCount = 14; // This will be the default value for the timeline zoom
-  const duration = 60; // This needs to be dynamic
-
-  const interval = duration / (frameCount + 1);
 
   // Readable stream
   const frameStream = new PassThrough();
 
-  res.setHeader("Content-Type", "multipart/x-mixed-replace; boundary=frame");
+  ffmpeg.ffprobe(videoPath, (err, metadata) => {
+    if (err) {
+      console.error("[FFPROBE]", err);
+      return res.status(500).send("Could not retrieve video metadata", err);
+    }
 
-  ffmpeg(videoPath)
-    .on("start", () => {
-      console.log("Started processing frames...");
-    })
-    .on("end", () => {
-      console.log("Finished processing frame");
-      frameStream.end();
-    })
-    .on("error", (error) => {
-      console.error(error);
-      res.status(500).end();
-    })
-    .outputOptions([
-      "-vf",
-      "fps=1,scale=160:90,setsar=1:1",
-      "-f",
-      "image2pipe",
-      "-vcodec",
-      "mjpeg",
-    ])
-    .pipe(frameStream);
+    const duration = metadata.format.duration;
+    console.log(duration);
+    const interval = duration / frameCount;
 
-  frameStream.on("data", (chunk) => {
-    res.write(
-      "--frame\r\n" +
-        "Content-Type: image/jpeg\r\n" +
-        `Content-Length: ${chunk.length}\r\n\r\n`
-    );
-    res.write(chunk);
-    res.write("\r\n");
-  });
+    console.log(interval);
 
-  frameStream.on("end", () => {
-    res.end();
+    res.setHeader("Content-Type", "multipart/x-mixed-replace; boundary=frame");
+
+    ffmpeg(videoPath)
+      .on("start", () => {
+        console.log("Started processing frames...");
+      })
+      .on("end", () => {
+        console.log("Finished processing frame");
+        frameStream.end();
+      })
+      .on("error", (error) => {
+        console.error(error);
+        res.status(500).end();
+      })
+      .outputOptions([
+        "-vf",
+        `fps=1/${interval},scale=160:90,setsar=1:1`,
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+      ])
+      .pipe(frameStream);
+
+    frameStream.on("data", (chunk) => {
+      res.write(
+        "--frame\r\n" +
+          "Content-Type: image/jpeg\r\n" +
+          `Content-Length: ${chunk.length}\r\n\r\n`
+      );
+      res.write(chunk);
+      res.write("\r\n");
+    });
+
+    frameStream.on("end", () => {
+      res.end();
+    });
   });
 });
 
